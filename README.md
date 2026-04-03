@@ -1,4 +1,4 @@
-# Eval360
+# K2-Lite evaluation based on Eval360
 
 Eval360 is a long-context language model evaluation workspace built around the LM Evaluation Harness. It provides opinionated scripts and automation for benchmarking large checkpoints on reasoning, math, and code suites while coordinating large-cluster workflows (SLURM, Ray, and vLLM). The repository glues together local checkpoints, Hugging Face models, and multi-node serving endpoints to streamline end-to-end evaluation runs.
 
