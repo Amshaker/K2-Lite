@@ -144,11 +144,11 @@ Each entry in `METRICS` follows the format `TASK:MAX_LENGTH:MAX_GEN_TOKENS:N`, w
 - **`TASK`** — `lm_eval` task name
 - **`MAX_LENGTH`** — total context length (prompt + generation)
 - **`MAX_GEN_TOKENS`** — maximum tokens to generate
-- **`N`** — number of samples per problem (use `>1` for pass@k tasks like AIME)
+- **`Pass@K`** — use `>1` for pass@k tasks like AIME
 
 ### Evaluated Tasks
 
-| Task | Max Length | Max Gen Tokens | Samples (N) |
+| Task | Max Length | Max Gen Tokens | Pass@K |
 |---|---|---|---|
 | `arc_challenge_chat` | 90 000 | 85 000 | 1 |
 | `minerva_math500` | 90 000 | 85 000 | 1 |
