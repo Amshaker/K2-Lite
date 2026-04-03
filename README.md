@@ -2,11 +2,6 @@
 
 Eval360 is a long-context language model evaluation workspace built around the LM Evaluation Harness. It provides opinionated scripts and automation for benchmarking large checkpoints on reasoning, math, and code suites while coordinating large-cluster workflows (SLURM, Ray, and vLLM). The repository glues together local checkpoints, Hugging Face models, and multi-node serving endpoints to streamline end-to-end evaluation runs.
 
-## Key Features
-- Runs curated "base" vs "instruct" evaluation tracks with preset `lm_eval` task lists and few-shot settings.
-- Launches batch jobs against SLURM- or Ray-backed vLLM servers for single- and multi-node inference.
-- Ships utilities to download and organize checkpoints (Hugging Face pulls, local organization helpers).
-- Provides shared helpers and notebooks for aggregating results from large evaluation sweeps.
 
 ## Repository Layout
 ```
@@ -31,8 +26,8 @@ Eval360/
 ## Environment Setup
 1. **Clone with submodules**
    ```bash
-   git clone --recursive <repo-url> Eval360
-   cd Eval360
+   git clone --recursive <repo-url> K2-Lite
+   cd K2-Lite
    ```
 2. **Create environment** (example)
    ```bash
@@ -49,104 +44,121 @@ Eval360/
    - `HF_TOKEN=<token>` for gated Hugging Face downloads
    - Modify `PATH` to point at your conda install (examples already in scripts)
 
-## Downloading Models
-Use `scripts/download/` utilities to fetch checkpoints into a local directory of your choice:
+# K2-Lite-1.7B
 
-- **Single model (Python helper)**
-  ```bash
-  python scripts/download/download_qwen.py
-  ```
-  Update the `MODEL_NAME`, `OUTPUT_DIR`, and `HF_TOKEN` constants at the top of the script before running it so the desired checkpoint and destination directory are used.
+## Downloading the Model
 
-- **DeepSeek V3 snapshot**
-  ```bash
-  python scripts/download/download_deepseek_v3.py
-  ```
+Download the model from HuggingFace:
 
-## Serving Models
-The `scripts/serving/` directory contains launchers for local vLLM endpoints and Ray Serve deployments:
+```
+https://huggingface.co/Amshaker/K2-Lite-1.7B
+```
 
-- **Single-node vLLM**
-  ```bash
-  sbatch scripts/serving/serve_vllm.sh
-  ```
-  Starts `vllm serve` on a node, exporting the specified model over HTTP.
+Place the model under `checkpoints/K2-Lite-1.7B`.
 
-- **Multi-node Ray cluster**
-  ```bash
-  sbatch scripts/serving/sbatch_ray.sh
-  ```
-  Boots a head node plus workers, then launches a vLLM Ray application. Customize environment variables for topology or NCCL settings.
-
-- **Ray Serve app**
-  ```python
-  # scripts/serving/deepseek.py
-  from ray import serve
-  serve.run(llm_app)
-  ```
-  Configure `LLMConfig` for deployment-scale inference with autoscaling and custom engine kwargs.
-
-- **API client**
-  ```bash
-  python scripts/serving/api_client.py --host localhost --port 8080
-  ```
-  Sanity-checks the OpenAI-compatible endpoint exposed by vLLM/Ray.
+## Running Inference
+ 
+The example below uses a math problem as the prompt and parses the model's thinking trace separately from its final answer.
+ 
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+ 
+model_name = "Amshaker/K2-Lite-1.7B"
+ 
+# Load the tokenizer and the model
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForCausalLM.from_pretrained(
+    model_name,
+    torch_dtype="auto",
+    device_map="auto"
+)
+ 
+# Prepare the model input
+prompt = "Solve: What is the sum of all integers from 1 to 100?"
+messages = [
+    {"role": "user", "content": prompt}
+]
+text = tokenizer.apply_chat_template(
+    messages,
+    tokenize=False,
+    add_generation_prompt=True,
+    enable_thinking=True  # Switches between thinking and non-thinking modes. Default is True.
+)
+model_inputs = tokenizer([text], return_tensors="pt").to(model.device)
+ 
+# Conduct text completion
+generated_ids = model.generate(
+    **model_inputs,
+    max_new_tokens=32768
+)
+output_ids = generated_ids[0][len(model_inputs.input_ids[0]):].tolist()
+ 
+# Parse thinking content
+try:
+    # rindex finding 151668 (</think>)
+    index = len(output_ids) - output_ids[::-1].index(151668)
+except ValueError:
+    index = 0
+ 
+thinking_content = tokenizer.decode(output_ids[:index], skip_special_tokens=True).strip("\n")
+content = tokenizer.decode(output_ids[index:], skip_special_tokens=True).strip("\n")
+ 
+print("thinking content:", thinking_content)
+print("content:", content)
+```
 
 ## Running Evaluations
-All evaluation scripts ultimately shell out to `lm_eval` with preset tasks.
 
-### Base Track (`scripts/eval/base/`)
-- **Batch orchestrator**
-  ```bash
-  sbatch scripts/eval/base/eval_baselines.sh
-  ```
-  Iterates over metrics (`mmlu`, `arc_challenge`, `gsm8k`, etc.) for one or more checkpoints, writing results to the `OUTPUT_PATH` configured inside the script.
+All evaluation scripts shell out to `lm_eval` with preset tasks.
 
-- **Metric-specific launchers**
-  - `eval_mmlu.sh`, `eval_mmlu_pro.sh`, `eval_mmlu_arabic.sh` – sweep checkpoints across MMLU variants, waiting for `done.txt` before running and handling few-shot counts.
-  - `eval_arc_bbh_gpqa_piqa.sh`, `eval_hellaswag.sh`, `eval_truthfulqa_winogrande_ifeval.sh` – group related benchmarks to share job resources while logging per-task outputs.
-  - `eval_gsm8k_math.sh`, `eval_humaneval_mbpp.sh`, `eval_gpqa_diamond_gen.sh` – set custom generation parameters (max tokens, sampling) tuned for math and code evaluations.
-  - `eval_harness_all_separate-vllm.sh` – launches a local vLLM server inside the job and iterates through a predefined metric list using the OpenAI-compatible completions API, running each metric in the background so multiple evaluations proceed concurrently.
-  Each script can be launched independently with `sbatch`, taking the model name and optional iteration range as arguments; inspect the header comments to match expected positional parameters.
+```bash
+MODEL_NAME=checkpoints/K2-Lite-1.7B
 
-- **Shared behavior**  
-  All per-metric scripts:
-  - Wait for checkpoints to finish preprocessing (`done.txt` sentinel).
-  - Call `lm_eval --model vllm --model_args pretrained=<ckpt>,tensor_parallel_size=8,...`.
-  - Log structured output and raw samples to each checkpoint’s `eval_results/` directory and the configured `--output_path`.
-  - Require appropriate tensor parallel size, dtype, and generation kwargs (see script for defaults).
+METRICS=(
+    "arc_challenge_chat:90000:85000:1"
+    "minerva_math500:90000:85000:1"
+    "gpqa_diamond_cot_zeroshot:90000:85000:1"
+    "gsm8k_reasoning_instruct:90000:85000:1"
+    "aime24:90000:85000:8"
+    "aime25:90000:85000:8"
+    "minerva_math_reasoning_instruct:60000:55000:1"
+)
 
-### Instruct Track (`scripts/eval/instruct/`)
-- **Preset sweep runner**
-  - `eval_baselines.sh` mirrors the base variant but configures chat-oriented tasks and points to instruction-tuned checkpoints or served endpoints.
-  - `eval_gsm8k_math.sh`, `eval_humaneval_mbpp.sh`, `eval_truthfulqa_winogrande_ifeval.sh`, `eval_ruler.sh`, `eval_gpqa_diamond_gen.sh`, `eval_aime.sh`, `eval_mmlu_redux.sh`, `eval_mmlu_pro.sh` – provide per-suite entry points with reasoning-aware prompts and sampling arguments tailored for instruction models.
-  - `eval_harness_all.sh` stitches multiple scripts together for back-to-back execution on cluster nodes when batch-evaluating a single checkpoint.
-  - `eval_harness_all_separate-vllm.sh` connects to an existing vLLM endpoint (or starts one if running locally) and streams through a curated set of instruction benchmarks, automatically switching between chat and completion APIs and batching tasks via background processes.
-  Each script documents required environment variables (e.g., serving endpoints, port numbers) near the top; adjust these before submission.
+for metric_config in "${METRICS[@]}"; do
+    IFS=':' read -r METRIC_NAME MAX_LENGTH MAX_GEN_TOKENS N <<< "$metric_config"
+    lm_eval --model vllm \
+            --model_args pretrained=${MODEL_NAME},tensor_parallel_size=1,dtype=bfloat16,gpu_memory_utilization=0.9,max_length=${MAX_LENGTH} \
+            --tasks ${METRIC_NAME} \
+            --output_path logs/ \
+            --batch_size auto \
+            --apply_chat_template \
+            --log_samples \
+            --gen_kwargs do_sample=true,temperature=1.4,top_k=20,top_p=1.0,max_gen_toks=${MAX_GEN_TOKENS},n=${N}
+done
+```
 
-- **Per-metric scripts** cover RULER, GPQA Diamond, AIME, GSM8K reasoning, MMLU Redux, etc. These mirror base scripts but set chat templates, system instructions, or reasoning-specific generation arguments.
+### Benchmark Configuration
 
-- **Logging & outputs**
-  - `lm_eval` writes metrics and samples to the `OUTPUT_PATH` configured inside each script.
-  - Standard SLURM output/error files record runtime details; adjust the `#SBATCH --output` directives to match your logging location.
+Each entry in `METRICS` follows the format `TASK:MAX_LENGTH:MAX_GEN_TOKENS:N`, where:
 
-### Common Options
-- Adjust `tensor_parallel_size`, `gpu_memory_utilization`, and `max_gen_toks` according to your hardware.
-- Pass `--confirm_run_unsafe_code` for tasks that execute model outputs (needed for code eval).
-- Enable optional tracking integrations by editing the scripts; none are required by default.
+- **`TASK`** — `lm_eval` task name
+- **`MAX_LENGTH`** — total context length (prompt + generation)
+- **`MAX_GEN_TOKENS`** — maximum tokens to generate
+- **`N`** — number of samples per problem (use `>1` for pass@k tasks like AIME)
 
-## Viewing Results
-- `scripts/display/common.py` collects shared logic for parsing `eval_results` directories, deriving per-task metrics, and computing category averages.
-- Utilities under `scripts/display/` can load structured JSON outputs and render tables or charts for quick inspection.
-- Generated artifacts include JSON score summaries and optional sample dumps at the directories supplied via each script’s `--output_path`.
+### Evaluated Tasks
 
-## Troubleshooting & Tips
-- **Checkpoint readiness:** many scripts poll for `done.txt`; ensure preprocessing jobs create this sentinel or adjust the logic.
-- **Long sequence lengths:** set `VLLM_ALLOW_LONG_MAX_MODEL_LEN=1` and ensure GPU memory utilization suits the model.
-- **Concurrency tuning:** adjust `num_concurrent`, `batch_size`, and `max_gen_toks` in `lm_eval` arguments to avoid timeouts.
-- **Ray cluster IPs:** `sbatch_ray.sh` auto-detects IPv6 vs IPv4; verify network interfaces if deployments hang.
-- **Hugging Face permissions:** keep tokens in environment variables rather than hardcoding in scripts when possible.
-- **Cleanup:** evaluation runs can emit large sample dumps and logs—prune older artifacts periodically to manage storage.
+| Task | Max Length | Max Gen Tokens | Samples (N) |
+|---|---|---|---|
+| `arc_challenge_chat` | 90 000 | 85 000 | 1 |
+| `minerva_math500` | 90 000 | 85 000 | 1 |
+| `gpqa_diamond_cot_zeroshot` | 90 000 | 85 000 | 1 |
+| `gsm8k_reasoning_instruct` | 90 000 | 85 000 | 1 |
+| `aime24` | 90 000 | 85 000 | 8 |
+| `aime25` | 90 000 | 85 000 | 8 |
+| `minerva_math_reasoning_instruct` | 60 000 | 55 000 | 1 |
+
+Results are saved to `logs/`.
 
 ## Acknowledgements
-Eval360 builds on the open-source LM Evaluation Harness and leverages vLLM, Ray Serve, and various Hugging Face model releases. Review the respective licenses and documentation for details on redistribution and usage.
+K2-Lite evaluation is based on Eval360, which builds on the open-source LM Evaluation Harness and leverages vLLM, Ray Serve, and various Hugging Face model releases. Review the respective licenses and documentation for details on redistribution and usage.
